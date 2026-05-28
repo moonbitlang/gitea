@@ -11,8 +11,6 @@ import {html} from '../utils/html.ts';
 
 const {appSubUrl, runModeIsProd} = window.config;
 
-type FetchActionErrorAction = '' | 'remove';
-
 type FetchActionOpts = {
   method: string;
   url: string;
@@ -26,9 +24,6 @@ type FetchActionOpts = {
   // the loading indicator element selector, it uses the same syntax as "data-fetch-sync" to find the element(s)
   // empty means no loading indicator, "$this" means the element itself
   loadingIndicator: string;
-
-  // behavior for failed requests; empty means show an error toast
-  errorAction: FetchActionErrorAction;
 };
 
 // fetchActionDoRedirect does real redirection to bypass the browser's limitations of "location"
@@ -95,13 +90,7 @@ async function handleFetchActionSuccess(el: HTMLElement, opt: FetchActionOpts, r
   }
 }
 
-// Exported for tests.
-export async function handleFetchActionError(el: HTMLElement, opt: FetchActionOpts, resp: Response) {
-  if (opt.errorAction === 'remove') {
-    el.remove();
-    return;
-  }
-
+async function handleFetchActionError(resp: Response) {
   const isRespJson = resp.headers.get('content-type')?.includes('application/json');
   const respText = await resp.text();
   const respJson = isRespJson ? JSON.parse(respText) : null;
@@ -147,13 +136,9 @@ async function performActionRequest(el: HTMLElement, opt: FetchActionOpts) {
       await handleFetchActionSuccess(el, opt, resp);
       return;
     }
-    await handleFetchActionError(el, opt, resp);
+    await handleFetchActionError(resp);
   } catch (err) {
     if (errorName(err) !== 'AbortError') {
-      if (opt.errorAction === 'remove') {
-        el.remove();
-        return;
-      }
       console.error(`Fetch action request error:`, err);
       showErrorToast(`Error: ${errorMessage(err)}`);
     }
@@ -198,7 +183,6 @@ function prepareFormFetchActionOpts(formEl: HTMLFormElement, opts: SubmitFormFet
     body: reqBody,
     loadingIndicator: '$this', // for form submit, by default, the loading indicator is the whole form
     successSync: formEl.getAttribute('data-fetch-sync') ?? '', // by default, no fetch sync for form submit
-    errorAction: (formEl.getAttribute('data-fetch-error') ?? '') as FetchActionErrorAction,
   };
 }
 
@@ -240,7 +224,6 @@ async function performLinkFetchAction(el: HTMLElement) {
     url: el.getAttribute('data-url')!,
     loadingIndicator: el.getAttribute('data-fetch-indicator') ?? '$this', // by default, the link-action itself is the loading indicator
     successSync: el.getAttribute('data-fetch-sync') ?? '', // by default, no fetch sync for link-action
-    errorAction: (el.getAttribute('data-fetch-error') ?? '') as FetchActionErrorAction,
   });
 }
 
@@ -257,7 +240,6 @@ export async function performFetchActionTrigger(el: HTMLElement, triggerType: Fe
     url: el.getAttribute('data-fetch-url')!,
     loadingIndicator: el.getAttribute('data-fetch-indicator') ?? defaultLoadingIndicator,
     successSync: el.getAttribute('data-fetch-sync') ?? '$this', // by default, the response will replace the current element
-    errorAction: (el.getAttribute('data-fetch-error') ?? '') as FetchActionErrorAction,
   });
 }
 
@@ -402,10 +384,6 @@ export function initGlobalFetchAction() {
   //   * "fetch-reload" (only triggered by fetch sync success to reload outdated content)
   //
   // * data-fetch-indicator: the loading indicator element selector, it uses the same syntax as "data-fetch-sync" to find the element(s)
-  //
-  // * data-fetch-error: controls failed requests
-  //   * empty: show an error toast
-  //   * "remove": remove the element without showing a toast
   //
   // * data-fetch-sync: when the response is text (html), the pseudo selectors/commands defined in "data-fetch-sync"
   //   will be used to update the content in the current page. It only supports some simple syntaxes that we need.

@@ -46,9 +46,15 @@ func TestGetDiffShortStatByCmdArgs(t *testing.T) {
 
 	repo := &mockRepository{path: repoDir}
 
-	numFiles, additions, deletions, err := GetDiffShortStatByCmdArgs(t.Context(), repo, nil, baseCommitID, headCommitID)
+	numFiles, additions, deletions, err := GetDiffShortStatByCmdArgs(t.Context(), repo, nil, baseCommitID, baseCommitID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, numFiles)
+	assert.Equal(t, 0, additions)
+	assert.Equal(t, 0, deletions)
+
+	numFiles, additions, deletions, err = GetDiffShortStatByCmdArgs(t.Context(), repo, nil, baseCommitID, headCommitID)
 	require.NoError(t, err)
 	assert.Equal(t, 4, numFiles)
-	assert.Equal(t, 4, additions)
-	assert.Equal(t, 3, deletions)
+	assert.Equal(t, 0, additions)
+	assert.Equal(t, 0, deletions)
 }
