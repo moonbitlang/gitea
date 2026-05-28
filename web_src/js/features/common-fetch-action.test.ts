@@ -1,4 +1,4 @@
-import {execPseudoSelectorCommands, handleFetchActionError, handleFetchActionSuccessJson} from './common-fetch-action.ts';
+import {execPseudoSelectorCommands, handleFetchActionSuccessJson} from './common-fetch-action.ts';
 
 test('execPseudoSelectorCommands', () => {
   window.document.body.innerHTML = `
@@ -56,19 +56,4 @@ test('handleFetchActionSuccessJson', async () => {
   expect(spyAssign).toHaveBeenCalledTimes(0);
   expect(spyReload).toHaveBeenCalledTimes(1);
   vi.resetAllMocks();
-});
-
-test('handleFetchActionError remove', async () => {
-  window.document.body.innerHTML = '<div id="remove-me"></div>';
-  const el = document.querySelector<HTMLElement>('#remove-me')!;
-
-  await handleFetchActionError(el, {
-    method: 'GET',
-    url: '/',
-    loadingIndicator: '',
-    successSync: '',
-    errorAction: 'remove',
-  }, new Response('Bad Request', {status: 400, statusText: 'Bad Request'}));
-
-  expect(document.querySelector('#remove-me')).toBeNull();
 });

@@ -273,10 +273,12 @@ func Diff(ctx *context.Context) {
 		AfterCommitID: commitID,
 	}
 	gitRepo := ctx.Repo.GitRepo
+	var gitRepoStore gitrepo.Repository = ctx.Repo.Repository
 
 	if ctx.Data["PageIsWiki"] != nil {
 		var err error
-		gitRepo, err = gitrepo.RepositoryFromRequestContextOrOpen(ctx, ctx.Repo.Repository.WikiStorageRepo())
+		gitRepoStore = ctx.Repo.Repository.WikiStorageRepo()
+		gitRepo, err = gitrepo.RepositoryFromRequestContextOrOpen(ctx, gitRepoStore)
 		if err != nil {
 			ctx.ServerError("Repo.GitRepo.GetCommit", err)
 			return
@@ -316,12 +318,12 @@ func Diff(ctx *context.Context) {
 		ctx.NotFound(err)
 		return
 	}
-	diffShortStatURL := ctx.Repo.RepoLink + "/diff-shortstat"
-	if ctx.Data["PageIsWiki"] != nil {
-		diffShortStatURL = ctx.Repo.RepoLink + "/wiki/diff-shortstat"
+	diffShortStat, err := gitdiff.GetDiffShortStat(ctx, gitRepoStore, gitRepo, "", commitID)
+	if err != nil {
+		ctx.ServerError("GetDiffShortStat", err)
+		return
 	}
-	setDiffShortStatPlaceholderData(ctx, len(diff.Files), buildDiffShortStatURL(diffShortStatURL, "", commitID, "detail"), "")
-	diffShortStat := ctx.Data["DiffShortStat"].(*gitdiff.DiffShortStat)
+	ctx.Data["DiffShortStat"] = diffShortStat
 
 	parents := make([]string, commit.ParentCount())
 	for i := 0; i < commit.ParentCount(); i++ {
