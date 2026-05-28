@@ -15,6 +15,9 @@ export type DiffTreeEntry = {
   Children: DiffTreeEntry[] | null,
   FileIcon: string,
   ParentEntry?: DiffTreeEntry,
+  // Position in the depth-first flattened leaf list (entriesByIndex). Set for
+  // leaves only; directory nodes leave it undefined.
+  Index?: number,
 };
 
 export type DiffFileTreeData = {
@@ -25,7 +28,16 @@ type DiffFileTree = {
   folderIcon: string;
   folderOpenIcon: string;
   diffFileTree: DiffFileTreeData;
-  fullNameMap: Record<string, DiffTreeEntry>
+  fullNameMap: Record<string, DiffTreeEntry>;
+  // Reverse lookup of NameHash -> entry. The diff page uses `#diff-<NameHash>`
+  // anchors but the server-side single-file fetch endpoint takes file paths,
+  // so we need to translate one to the other on hash navigation.
+  nameHashMap: Record<string, DiffTreeEntry>;
+  // Depth-first flattened list of file entries (leaves only), in diff order.
+  // The jump section's up/down "Show More" buttons slice this around the
+  // currently loaded range to fetch adjacent batches by path. Each leaf's
+  // position is also stored on the entry itself as `Index`.
+  entriesByIndex: DiffTreeEntry[];
   fileTreeIsVisible: boolean;
   selectedItem: string;
 };
@@ -47,13 +59,27 @@ export function diffTreeStoreSetViewed(store: Reactive<DiffFileTree>, fullName: 
   }
 }
 
-function fillFullNameMap(map: Record<string, DiffTreeEntry>, entry: DiffTreeEntry) {
-  map[entry.FullName] = entry;
-  if (!entry.Children) return;
+function fillMaps(
+  fullNameMap: Record<string, DiffTreeEntry>,
+  nameHashMap: Record<string, DiffTreeEntry>,
+  entriesByIndex: DiffTreeEntry[],
+  entry: DiffTreeEntry,
+) {
+  fullNameMap[entry.FullName] = entry;
+  if (!entry.Children) {
+    // Leaf node = an actual file. Only leaves get a non-empty NameHash (see
+    // routers/web/repo/treelist.go); directory nodes are skipped.
+    if (entry.NameHash) {
+      nameHashMap[entry.NameHash] = entry;
+      entry.Index = entriesByIndex.length;
+      entriesByIndex.push(entry);
+    }
+    return;
+  }
   entry.IsViewed = isEntryViewed(entry);
   for (const child of entry.Children) {
     child.ParentEntry = entry;
-    fillFullNameMap(map, child);
+    fillMaps(fullNameMap, nameHashMap, entriesByIndex, child);
   }
 }
 
@@ -65,8 +91,10 @@ export function reactiveDiffTreeStore(data: DiffFileTreeData, folderIcon: string
     fileTreeIsVisible: false,
     selectedItem: '',
     fullNameMap: {},
+    nameHashMap: {},
+    entriesByIndex: [],
   });
-  fillFullNameMap(store.fullNameMap, data.TreeRoot);
+  fillMaps(store.fullNameMap, store.nameHashMap, store.entriesByIndex, data.TreeRoot);
   return store;
 }
 

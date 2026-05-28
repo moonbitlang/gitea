@@ -13,6 +13,7 @@ import {invertFileFolding} from './file-fold.ts';
 import {parseDom} from '../utils.ts';
 import {registerGlobalSelectorFunc} from '../modules/observer.ts';
 import {performFetchActionTrigger} from './common-fetch-action.ts';
+import {diffTreeStore, type DiffTreeEntry} from '../modules/diff-file.ts';
 
 function initRepoDiffFileBox(el: HTMLElement) {
   // switch between "rendered" and "source", for image and CSV files
@@ -175,6 +176,7 @@ async function loadMoreFiles(btn: Element): Promise<boolean> {
     const respFileBoxesChildren = Array.from(respFileBoxes.children); // "children:HTMLCollection" will be empty after replaceWith
     document.querySelector('#diff-incomplete')!.replaceWith(...respFileBoxesChildren);
     onShowMoreFiles();
+    closeJumpGapIfBridged();
     return true;
   } catch (error) {
     console.error('Error:', error);
@@ -189,6 +191,19 @@ function initRepoDiffShowMore() {
   addDelegatedEventListener(document, 'click', 'a#diff-show-more-files', (el, e) => {
     e.preventDefault();
     loadMoreFiles(el);
+  });
+
+  addDelegatedEventListener<HTMLElement, MouseEvent>(document, 'click', 'a.jump-show-more-files', async (el, e) => {
+    e.preventDefault();
+    if (el.classList.contains('disabled')) return;
+    const direction = el.getAttribute('data-direction');
+    if (direction !== 'up' && direction !== 'down') return;
+    el.classList.add('disabled');
+    try {
+      await loadJumpBatch(direction);
+    } finally {
+      el.classList.remove('disabled');
+    }
   });
 
   addDelegatedEventListener(document, 'click', 'a.diff-load-button', async (el, e) => {
@@ -257,6 +272,17 @@ async function onLocationHashChange() {
       }
     }
 
+    // #diff-<NameHash> outside the loaded slice: fast path via single block fetch,
+    // replacing the cascading "Show More" loop (~12 round-trips for a 1200-file diff).
+    if (currentHash.startsWith('#diff-')) {
+      const nameHash = currentHash.substring('#diff-'.length);
+      const entry = diffTreeStore().nameHashMap[nameHash];
+      if (!entry) return;
+      const ok = await loadFileBlock(entry);
+      if (!ok) return;
+      continue;
+    }
+
     // the button will be refreshed after each "load more", so query it every time
     const showMoreButton = document.querySelector('#diff-show-more-files');
     if (!showMoreButton) {
@@ -267,6 +293,155 @@ async function onLocationHashChange() {
     const ok = await loadMoreFiles(showMoreButton);
     if (!ok) return; // failed to load more files
   }
+}
+
+async function fetchFileBoxes(paths: string[]): Promise<Element[] | null> {
+  const params = new URLSearchParams(window.location.search);
+  params.set('file-only', 'true');
+  params.delete('files');
+  for (const p of paths) params.append('files', p);
+  try {
+    const response = await GET(`${window.location.pathname}?${params.toString()}`);
+    if (!response.ok) {
+      showErrorToast(`Failed to load file diff: ${response.status} ${response.statusText}`);
+      return null;
+    }
+    const respDoc = parseDom(await response.text(), 'text/html');
+    const respFileBoxes = respDoc.querySelector('#diff-file-boxes');
+    if (!respFileBoxes) return null;
+    return Array.from(respFileBoxes.children).filter(
+      (el) => el.matches('.diff-file-box') && el.id !== 'diff-incomplete',
+    );
+  } catch (error) {
+    console.error('fetchFileBoxes error:', error);
+    showErrorToast(`Error loading file diff: ${errorMessage(error)}`);
+    return null;
+  }
+}
+
+// Jump section = jumped-to block + optional up/down buttons appended to #diff-file-boxes.
+// No cached range state: the up button's next sibling is the first jump file, the down
+// button's previous sibling is the last, and each box id (`diff-<NameHash>`) resolves
+// to its entry.Index via the diff tree store.
+const JUMP_UP_ID = 'diff-jump-incomplete-up';
+const JUMP_DOWN_ID = 'diff-jump-incomplete-down';
+
+function boxIndex(box: Element | null | undefined): number | undefined {
+  if (!box?.id?.startsWith('diff-')) return undefined;
+  return diffTreeStore().nameHashMap[box.id.substring('diff-'.length)]?.Index;
+}
+
+function makeJumpButton(id: string, direction: 'up' | 'down'): HTMLElement {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'diff-file-box file-content tw-mt-2';
+  wrapper.id = id;
+  const h4 = document.createElement('h4');
+  h4.className = 'ui top attached header tw-font-normal flex-left-right';
+  const btn = document.createElement('a');
+  btn.className = 'ui basic tiny button jump-show-more-files';
+  btn.setAttribute('data-direction', direction);
+  // Inherit the existing button's translated label rather than re-piping it through pageData.
+  btn.textContent = document.querySelector('#diff-show-more-files')?.textContent?.trim() || 'Show More';
+  h4.append(btn);
+  wrapper.append(h4);
+  return wrapper;
+}
+
+async function loadFileBlock(entry: DiffTreeEntry): Promise<boolean> {
+  const store = diffTreeStore();
+  if (entry.Index === undefined) return false;
+
+  // Align to the same MaxGitDiffFiles grid as the main flow (e.g. file #835, max=100 → 800..899)
+  // so jump and main loads are either disjoint or fully overlapping — no partial-overlap math.
+  const max = window.config.pageData.MaxGitDiffFiles!;
+  const total = store.entriesByIndex.length;
+  const blockStart = Math.floor(entry.Index / max) * max;
+  const blockEnd = Math.min(blockStart + max, total);
+  const paths = store.entriesByIndex.slice(blockStart, blockEnd).map((e) => e.FullName);
+
+  const boxes = await fetchFileBoxes(paths);
+  if (!boxes || !boxes.length) return false;
+
+  const container = document.querySelector('#diff-file-boxes');
+  if (!container) return false;
+  clearDetachedJumpSection(container);
+
+  if (blockStart > 0) container.append(makeJumpButton(JUMP_UP_ID, 'up'));
+  container.append(...boxes);
+  if (blockEnd < total) container.append(makeJumpButton(JUMP_DOWN_ID, 'down'));
+
+  onShowMoreFiles();
+  closeJumpGapIfBridged();
+  return true;
+}
+
+// On re-jump: if the previous section's up button is still here, its files are disjoint
+// from main and get removed; otherwise they've merged into main and stay.
+function clearDetachedJumpSection(container: Element) {
+  const upBtn = container.querySelector(`#${JUMP_UP_ID}`);
+  const downBtn = container.querySelector(`#${JUMP_DOWN_ID}`);
+
+  if (upBtn) {
+    let node = upBtn.nextElementSibling;
+    while (node && node !== downBtn) {
+      const next = node.nextElementSibling;
+      node.remove();
+      node = next;
+    }
+  }
+  upBtn?.remove();
+  downBtn?.remove();
+}
+
+async function loadJumpBatch(direction: 'up' | 'down'): Promise<void> {
+  const container = document.querySelector<HTMLElement>('#diff-file-boxes');
+  if (!container) return;
+  const store = diffTreeStore();
+  const total = store.entriesByIndex.length;
+  const max = window.config.pageData.MaxGitDiffFiles!;
+  const buttonId = direction === 'up' ? JUMP_UP_ID : JUMP_DOWN_ID;
+  const button = container.querySelector(`#${buttonId}`);
+  if (!button) return;
+
+  let sliceStart: number, sliceEnd: number; // half-open [sliceStart, sliceEnd)
+  if (direction === 'up') {
+    const firstIdx = boxIndex(button.nextElementSibling);
+    if (firstIdx === undefined || firstIdx <= 0) return;
+    sliceStart = Math.max(0, firstIdx - max);
+    sliceEnd = firstIdx;
+  } else {
+    const lastIdx = boxIndex(button.previousElementSibling);
+    if (lastIdx === undefined || lastIdx >= total - 1) return;
+    sliceStart = lastIdx + 1;
+    sliceEnd = Math.min(total, sliceStart + max);
+  }
+
+  const paths = store.entriesByIndex.slice(sliceStart, sliceEnd).map((e) => e.FullName);
+  const boxes = await fetchFileBoxes(paths);
+  if (!boxes) return;
+  // Button may have been removed (or section cleared) during await.
+  const liveButton = container.querySelector(`#${buttonId}`);
+  if (!liveButton) return;
+  if (direction === 'up') liveButton.after(...boxes);
+  else liveButton.before(...boxes);
+  if (direction === 'up' && sliceStart <= 0) container.querySelector(`#${buttonId}`)?.remove();
+  if (direction === 'down' && sliceEnd >= total) container.querySelector(`#${buttonId}`)?.remove();
+  onShowMoreFiles();
+  closeJumpGapIfBridged();
+}
+
+// When main's tail meets jump's head, the up button and main `#diff-incomplete` are both redundant.
+function closeJumpGapIfBridged() {
+  const container = document.querySelector('#diff-file-boxes');
+  if (!container) return;
+  const upBtn = container.querySelector(`#${JUMP_UP_ID}`);
+  if (!upBtn) return;
+  const firstIdx = boxIndex(upBtn.nextElementSibling);
+  if (firstIdx === undefined || firstIdx <= 0) return;
+  const prev = diffTreeStore().entriesByIndex[firstIdx - 1];
+  if (!prev?.NameHash || !container.querySelector(`#diff-${CSS.escape(prev.NameHash)}`)) return;
+  upBtn.remove();
+  container.querySelector('#diff-incomplete')?.remove();
 }
 
 function initRepoDiffHashChangeListener() {

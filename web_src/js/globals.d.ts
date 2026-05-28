@@ -39,6 +39,7 @@ interface Window {
       DiffFileTree?: import('./modules/diff-file.ts').DiffFileTreeData,
       FolderIcon?: string,
       FolderOpenIcon?: string,
+      MaxGitDiffFiles?: number,
       repoLink?: string,
       repoActivityTopAuthors?: any[],
       pullRequestMergeForm?: Record<string, any>,
